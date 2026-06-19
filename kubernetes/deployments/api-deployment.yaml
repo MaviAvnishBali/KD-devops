@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kila-darbar-api
+  namespace: kila-darbar
+  labels:
+    app: kila-darbar-api
+    version: "1.0.0"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kila-darbar-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: kila-darbar-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/api/actuator/prometheus"
+    spec:
+      serviceAccountName: kila-darbar-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+        - name: api
+          image: kiladarbar/api:1.0.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: prod
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: kila-darbar-secrets
+                  key: db-url
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: kila-darbar-secrets
+                  key: db-username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kila-darbar-secrets
+                  key: db-password
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: kila-darbar-config
+                  key: redis-host
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: kila-darbar-secrets
+                  key: jwt-secret
+            - name: RAZORPAY_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: kila-darbar-secrets
+                  key: razorpay-key-id
+            - name: RAZORPAY_KEY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: kila-darbar-secrets
+                  key: razorpay-key-secret
+            - name: JAVA_OPTS
+              value: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+UseG1GC"
+
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+
+          livenessProbe:
+            httpGet:
+              path: /api/actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /api/actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+
+          volumeMounts:
+            - name: firebase-credentials
+              mountPath: /app/credentials
+              readOnly: true
+
+      volumes:
+        - name: firebase-credentials
+          secret:
+            secretName: firebase-credentials
+
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - kila-darbar-api
+                topologyKey: kubernetes.io/hostname
+
+      terminationGracePeriodSeconds: 30

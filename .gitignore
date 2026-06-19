@@ -1,0 +1,60 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+crash.log
+crash.*.log
+
+# Kubernetes secrets
+*-secret.yaml
+*-secrets.yaml
+*secret*.yaml
+!*secret*example*.yaml
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Ansible
+*.retry
+ansible/vault_password
+
+# Helm
+charts/*/charts/
+charts/*/Chart.lock
+
+# Sensitive configs
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+kubeconfig
+*kubeconfig*
+!kubeconfig.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.*
+!.env.example

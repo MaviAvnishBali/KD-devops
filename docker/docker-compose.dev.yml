@@ -1,0 +1,187 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kd-postgres
+    environment:
+      POSTGRES_DB: kiladarbar
+      POSTGRES_USER: kiladarbar
+      POSTGRES_PASSWORD: kiladarbar123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kiladarbar"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kd-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: kd-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - kd-network
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
+    container_name: kd-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - kd-network
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.14.0
+    container_name: kd-kibana
+    ports:
+      - "5601:5601"
+    environment:
+      ELASTICSEARCH_HOSTS: "http://elasticsearch:9200"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - kd-network
+
+  api:
+    build:
+      context: ../../backend/kila-darbar-api
+      dockerfile: Dockerfile
+    container_name: kd-api
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      DB_URL: jdbc:postgresql://postgres:5432/kiladarbar
+      DB_USERNAME: kiladarbar
+      DB_PASSWORD: kiladarbar123
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ES_URI: http://elasticsearch:9200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - api_logs:/var/log/kila-darbar
+    networks:
+      - kd-network
+    restart: unless-stopped
+
+  customer-website:
+    build:
+      context: ../../frontend/customer-website
+      dockerfile: Dockerfile
+    container_name: kd-website
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://api:8080/api
+    depends_on:
+      - api
+    networks:
+      - kd-network
+
+  admin-dashboard:
+    build:
+      context: ../../frontend/admin-dashboard
+      dockerfile: Dockerfile
+    container_name: kd-admin
+    ports:
+      - "3001:3001"
+    environment:
+      NEXT_PUBLIC_API_URL: http://api:8080/api
+    depends_on:
+      - api
+    networks:
+      - kd-network
+
+  kds:
+    build:
+      context: ../../frontend/kds
+      dockerfile: Dockerfile
+    container_name: kd-kds
+    ports:
+      - "3002:3002"
+    environment:
+      NEXT_PUBLIC_API_URL: http://api:8080/api
+    networks:
+      - kd-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: kd-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api
+      - customer-website
+      - admin-dashboard
+    networks:
+      - kd-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: kd-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - kd-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: kd-grafana
+    ports:
+      - "3003:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: kiladarbar
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    networks:
+      - kd-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  es_data:
+  api_logs:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  kd-network:
+    driver: bridge
