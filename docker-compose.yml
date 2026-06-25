@@ -1,0 +1,168 @@
+version: "3.9"
+
+# ══════════════════════════════════════════════════════════════
+#  Kila Darbar — Local Development Stack
+#  Usage:
+#    docker compose up -d           (start all)
+#    docker compose up -d postgres redis   (infra only)
+# ══════════════════════════════════════════════════════════════
+
+x-restart: &restart
+  restart: unless-stopped
+
+x-healthcheck-defaults: &hc-defaults
+  interval: 15s
+  timeout: 10s
+  retries: 5
+  start_period: 30s
+
+services:
+
+  # ── PostgreSQL 16 ──────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    <<: *restart
+    container_name: kila-postgres
+    environment:
+      POSTGRES_DB:       kiladarbar
+      POSTGRES_USER:     kiladarbar
+      POSTGRES_PASSWORD: kiladarbar123
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      <<: *hc-defaults
+      test: ["CMD-SHELL", "pg_isready -U kiladarbar -d kiladarbar"]
+    networks:
+      - kila-net
+
+  # ── Redis 7 ───────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    <<: *restart
+    container_name: kila-redis
+    command: redis-server --save 20 1 --loglevel warning --requirepass ""
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      <<: *hc-defaults
+      test: ["CMD", "redis-cli", "ping"]
+    networks:
+      - kila-net
+
+  # ── Kafka (KRaft mode — no Zookeeper) ─────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    <<: *restart
+    container_name: kila-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      <<: *hc-defaults
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list || exit 1"]
+    networks:
+      - kila-net
+
+  # ── Spring Boot API ───────────────────────────────────────
+  api:
+    build:
+      context: ../backend/kila-darbar-api
+      dockerfile: Dockerfile
+    <<: *restart
+    container_name: kila-api
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      DB_URL:         jdbc:postgresql://postgres:5432/kiladarbar
+      DB_USERNAME:    kiladarbar
+      DB_PASSWORD:    kiladarbar123
+      REDIS_HOST:     redis
+      REDIS_PORT:     6379
+      KAFKA_BROKERS:  kafka:9092
+      JWT_SECRET:     ${JWT_SECRET:-change-this-in-production-use-256-bit-key}
+      SERVER_PORT:    8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      <<: *hc-defaults
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/actuator/health | grep -q UP"]
+    networks:
+      - kila-net
+
+  # ── Nginx reverse proxy ───────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    <<: *restart
+    container_name: kila-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - api
+    networks:
+      - kila-net
+
+  # ── Adminer (DB GUI for dev) ──────────────────────────────
+  adminer:
+    image: adminer:latest
+    <<: *restart
+    container_name: kila-adminer
+    ports:
+      - "8081:8080"
+    depends_on:
+      - postgres
+    networks:
+      - kila-net
+    profiles:
+      - tools
+
+  # ── Redis Commander (Redis GUI for dev) ──────────────────
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    <<: *restart
+    container_name: kila-redis-ui
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8082:8081"
+    depends_on:
+      - redis
+    networks:
+      - kila-net
+    profiles:
+      - tools
+
+volumes:
+  postgres_data:
+  redis_data:
+  kafka_data:
+
+networks:
+  kila-net:
+    driver: bridge
